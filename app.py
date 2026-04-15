@@ -3,15 +3,86 @@ import sqlite3
 import hashlib
 from datetime import datetime, date
 from functools import wraps
+import os
 
 app = Flask(__name__)
 app.secret_key = "clinic_secret_key_2026_secure_key"
 
 # Database connection helper
 def get_db():
-    conn = sqlite3.connect('clinic.db')
+    db_path = os.path.join(os.path.dirname(__file__), 'clinic.db')
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
+
+# Initialize database
+def init_db():
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Create users table
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT DEFAULT 'PATIENT',
+        phone TEXT,
+        specialization TEXT,
+        age INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    
+    # Create appointments table
+    c.execute('''CREATE TABLE IF NOT EXISTS appointments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        patient_id INTEGER NOT NULL,
+        doctor_id INTEGER NOT NULL,
+        patient_age INTEGER,
+        patient_reason TEXT,
+        appointment_date DATE NOT NULL,
+        slot TEXT NOT NULL,
+        payment_method TEXT,
+        status TEXT DEFAULT 'PENDING',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (patient_id) REFERENCES users (id),
+        FOREIGN KEY (doctor_id) REFERENCES users (id)
+    )''')
+    
+    # Check if admin exists
+    admin = c.execute("SELECT * FROM users WHERE email = ?", ('admin@clinic.com',)).fetchone()
+    if not admin:
+        hashed_password = hash_password("admin123")
+        c.execute("INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
+                  ("System Admin", "admin@clinic.com", hashed_password, "ADMIN"))
+        print("✓ Admin account created")
+    
+    # Add sample doctors if none exist
+    doctors = c.execute("SELECT * FROM users WHERE role = 'DOCTOR'").fetchall()
+    if not doctors:
+        hashed_password = hash_password("doctor123")
+        c.execute("INSERT INTO users (name, email, password, role, specialization) VALUES (?, ?, ?, ?, ?)",
+                  ("Dr. Sarah Johnson", "dr.sarah@clinic.com", hashed_password, "DOCTOR", "Cardiologist"))
+        c.execute("INSERT INTO users (name, email, password, role, specialization) VALUES (?, ?, ?, ?, ?)",
+                  ("Dr. Michael Chen", "dr.michael@clinic.com", hashed_password, "DOCTOR", "Neurologist"))
+        c.execute("INSERT INTO users (name, email, password, role, specialization) VALUES (?, ?, ?, ?, ?)",
+                  ("Dr. Emily Brown", "dr.emily@clinic.com", hashed_password, "DOCTOR", "Pediatrician"))
+        print("✓ Doctor accounts created")
+    
+    # Add sample patient if none exist
+    patient = c.execute("SELECT * FROM users WHERE email = ?", ('patient@example.com',)).fetchone()
+    if not patient:
+        hashed_password = hash_password("patient123")
+        c.execute("INSERT INTO users (name, email, password, role, phone, age) VALUES (?, ?, ?, ?, ?, ?)",
+                  ("John Doe", "patient@example.com", hashed_password, "PATIENT", "9876543210", 30))
+        print("✓ Patient account created")
+    
+    conn.commit()
+    conn.close()
+
+# Hash password function
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
 # Login required decorator
 def login_required(f):
@@ -35,18 +106,14 @@ def role_required(*roles):
         return decorated_function
     return decorator
 
-# Hash password
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
 # Get available slots for a doctor on a specific date
-def get_available_slots(doctor_id, date):
+def get_available_slots(doctor_id, appointment_date):
     all_slots = ["09:00 AM", "10:00 AM", "11:00 AM", "02:00 PM", "03:00 PM", "04:00 PM"]
     conn = get_db()
     c = conn.cursor()
     booked_slots = c.execute(
         "SELECT slot FROM appointments WHERE doctor_id = ? AND appointment_date = ? AND status != 'CANCELLED'",
-        (doctor_id, date)
+        (doctor_id, appointment_date)
     ).fetchall()
     conn.close()
     booked_slots_list = [slot['slot'] for slot in booked_slots]
@@ -308,5 +375,11 @@ def admin_dashboard():
                          recent_appointments=recent_appointments,
                          users=users)
 
+# Initialize database when app starts
+with app.app_context():
+    init_db()
+
+# Run the app
 if __name__ == '__main__':
-    app.run(debug=True, host='127.0.0.1', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
